@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Loan tracking App</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background-color: #f4f4f4;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h2 {
+      margin-top: 1rem;
+      color: #333;
+    }
+
+    .container {
+      width: 95%;
+      max-width: 500px;
+      background: white;
+      padding: 1rem;
+      margin: 1rem 0;
+      border-radius: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+
+    input, button, select {
+      width: 100%;
+      padding: 10px;
+      margin: 8px 0;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+
+    button {
+      background-color: #2e8b57;
+      color: white;
+      font-weight: bold;
+      border: none;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #256d46;
+    }
+
+    .loan-card {
+      border: 1px solid #ddd;
+      padding: 10px;
+      margin-top: 10px;
+      border-radius: 6px;
+      background-color: #fafafa;
+    }
+
+    .loan-card h4 {
+      margin: 0 0 5px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>📲 Loan Tracker</h2>
+
+<div>
+  <label>Opening Balance:</label>
+  <input type="number" id="openingBalance" placeholder="e.g. 10000" />
+</div>
+
+
+<h4>Money Out</h4>
+<div>
+  <select id="moneyOutType">
+    <option value="Expense">Expense</option>
+    <option value="Savings">Savings</option>
+    <option value="Drawings">Drawings</option>
+  </select>
+  <input type="number" id="moneyOutAmount" placeholder="Amount" />
+  <input type="text" id="moneyOutNote" placeholder="Enter note/description" />
+  <button onclick="addMoneyOut()">Add Money Out</button>
+</div>
+
+<div id="moneyOutList"></div>
+  <div class="container">
+    <h3>Add New Loan</h3>
+    <input type="text" id="name" placeholder="Customer Name">
+    <input type="number" id="amount" placeholder="Loan Amount">
+    <button onclick="addLoan()">Add Loan</button>
+  </div>
+
+  <div class="container">
+    <h3>Enter Payment</h3>
+    <select id="customerSelect"></select>
+    <input type="number" id="payment" placeholder="Amount Paid Today">
+    <button onclick="addPayment()">Add Payment</button>
+    <button onclick="cancelPaymentEdit()" id="cancelPaymentEdit" style="display:none;">Cancel</button>
+
+  </div>
+
+
+  <div class="container">
+    <h3>Loans Overview</h3>
+    <button onclick="exportCSV()" style="background:#1e90ff;">⬇️ Export to Excel (CSV)</button>
+<button onclick="exportPDF()" style="background:#ff6347;">⬇️ Export to PDF</button>
+
+    <div id="loanList"></div>
+  </div>
+<button id="loanBtn" onclick="addLoan()">Add Loan</button>
+<button id="cancelEdit" onclick="cancelEdit()" style="display: none; background: gray;">Cancel Edit</button>
+
+
+
+
+
+<!-- Firebase App (Core) -->
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<!-- Firestore -->
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIza...", // paste your own here
+    authDomain: "loan-tracker-ezra.firebaseapp.com",
+    projectId: "loan-tracker-ezra",
+    storageBucket: "loan-tracker-ezra.appspot.com",
+    messagingSenderId: "123456789",
+    appId: "1:123456789:web:abc123"
+  };
+
+  // Initialize Firebase
+  firebase.initializeApp(firebaseConfig);
+
+  // Init Firestore
+  const db = firebase.firestore();
+</script>
+
+<script>
+let loans = [];
+let editIndex = -1;
+let paymentEditIndex = null;
+let openingBalance = 0; // 💰 Set manually or fetch from DB if needed
+
+// Load loans from Firestore
+async function loadLoans() {
+  const snapshot = await db.collection("loans").get();
+  loans = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  updateUI();
+}
+
+// Save loans to Firestore
+async function saveLoans() {
+  for (const loan of loans) {
+    if (loan.id) {
+      await db.collection("loans").doc(loan.id).set(loan);
+    } else {
+      const docRef = await db.collection("loans").add(loan);
+      loan.id = docRef.id;
+    }
+  }
+  updateUI();
+}
+
+// Reset form
+function resetForm() {
+  document.getElementById('name').value = '';
+  document.getElementById('amount').value = '';
+  document.getElementById('loanBtn').textContent = 'Add Loan';
+  document.getElementById('cancelEdit').style.display = 'none';
+  editIndex = -1;
+}
+
+// Add or update a loan
+function addLoan() {
+  const name = document.getElementById('name').value.trim();
+  const amount = parseFloat(document.getElementById('amount').value);
+  if (!name || !amount) return alert("Enter name and amount");
+
+  const interest = amount * 0.20;
+  const total = amount + interest;
+  const daily = (total / 12).toFixed(2);
+
+  const loan = {
+    name,
+    amount,
+    interest,
+    total,
+    daily,
+    paid: 0,
+    payments: [],
+    givenDate: new Date().toLocaleDateString()
+  };
+
+  if (editIndex > -1) {
+    loan.paid = loans[editIndex].paid;
+    loan.payments = loans[editIndex].payments;
+    loans[editIndex] = loan;
+  } else {
+    loans.push(loan);
+  }
+
+  saveLoans();
+  updateUI();
+  resetForm();
+}
+
+function editLoan(index) {
+  const loan = loans[index];
+  document.getElementById('name').value = loan.name;
+  document.getElementById('amount').value = loan.amount;
+  document.getElementById('loanBtn').textContent = 'Update Loan';
+  document.getElementById('cancelEdit').style.display = 'inline-block';
+  editIndex = index;
+}
+
+function cancelEdit() {
+  resetForm();
+}
+
+// Add or update a payment
+function addPayment() {
+  const index = document.getElementById('customerSelect').value;
+  const paymentAmount = parseFloat(document.getElementById('payment').value);
+  if (!paymentAmount) return alert("Enter valid payment");
+
+  const now = new Date();
+  const timestamp = `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`;
+
+if (paymentEditIndex !== null) {
+  loans[index].payments[paymentEditIndex].amount = paymentAmount;
+  loans[index].payments[paymentEditIndex].date = timestamp;
+  loans[index].paid = loans[index].payments.reduce((sum, p) => sum + p.amount, 0);
+
+
+  // Recalculate paid
+  loans[index].paid = loans[index].payments.reduce((sum, p) => sum + p.amount, 0);
+
+    paymentEditIndex = null;
+    document.getElementById('cancelPaymentEdit').style.display = 'none';
+  } else {
+    loans[index].paid += paymentAmount;
+    loans[index].payments.push({
+      date: timestamp,
+      amount: paymentAmount
+    });
+  }
+  updateUI();
+  saveLoans();
+  document.getElementById('payment').value = '';
+}
+
+// Edit a specific payment
+function editPayment(loanIndex, paymentIndex) {
+  const payment = loans[loanIndex].payments[paymentIndex];
+  document.getElementById('payment').value = payment.amount;
+  paymentEditIndex = paymentIndex;
+  document.getElementById('customerSelect').value = loanIndex;
+  document.getElementById('cancelPaymentEdit').style.display = 'inline-block';
+}
+
+// Cancel payment edit
+function cancelPaymentEdit() {
+  paymentEditIndex = null;
+  document.getElementById('payment').value = '';
+  document.getElementById('cancelPaymentEdit').style.display = 'none';
+}
+
+// Delete loan
+function deleteLoan(index) {
+  if (confirm("Are you sure you want to delete this loan?")) {
+    loans.splice(index, 1);
+    saveLoans();
+  }
+}
+
+// Update the UI
+function updateUI() {
+  const loanList = document.getElementById('loanList');
+  const customerSelect = document.getElementById('customerSelect');
+  loanList.innerHTML = '';
+  customerSelect.innerHTML = '';
+
+  let today = new Date().toLocaleDateString();
+  let totalCollections = 0;
+  let loansGivenToday = 0;
+
+  loans.forEach((loan, index) => {
+    // Count daily collection
+    const todaysPayments = loan.payments.filter(p => p.date.startsWith(today));
+    const dailySum = todaysPayments.reduce((sum, p) => sum + p.amount, 0);
+    totalCollections += dailySum;
+
+    if (loan.givenDate === today) loansGivenToday += loan.amount;
+
+    const card = document.createElement('div');
+    card.className = 'loan-card';
+    card.innerHTML = `
+      <h4>${loan.name}</h4>
+      <p><strong>Loan:</strong> ${loan.amount}</p>
+      <p><strong>Total (w/ Interest):</strong> ${loan.total}</p>
+      <p><strong>Daily:</strong> ${loan.daily}</p>
+      <p><strong>Paid:</strong> ${loan.paid.toFixed(2)}</p>
+      <p><strong>Remaining:</strong> ${(loan.total - loan.paid).toFixed(2)}</p>
+      <p><strong>Payments:</strong></p>
+      <ul>
+        ${loan.payments.map((p, j) => `
+          <li>
+            ${p.date} - ${p.amount}
+            <button onclick="editPayment(${index}, ${j})">✏️</button>
+          </li>
+        `).join('')}
+      </ul>
+      <button onclick="editLoan(${index})">✏️ Edit</button>
+      <button onclick="deleteLoan(${index})">🗑️ Delete</button>
+    `;
+    loanList.appendChild(card);
+
+    const option = document.createElement('option');
+    option.value = index;
+    option.text = loan.name;
+    customerSelect.appendChild(option);
+  });
+
+  // Add summary
+  const summary = document.createElement('div');
+  summary.className = 'loan-card';
+  const closingBalance = openingBalance + totalCollections - loansGivenToday;
+
+  summary.innerHTML = `
+    <h4>📊 Daily Summary (${today})</h4>
+    <p><strong>Opening Balance:</strong> ${openingBalance}</p>
+    <p><strong>Loans Given Today:</strong> ${loansGivenToday}</p>
+    <p><strong>Payments Collected:</strong> ${totalCollections}</p>
+    <p><strong>Closing Balance:</strong> ${closingBalance}</p>
+  `;
+  loanList.appendChild(summary);
+}
+
+// pdf export
+async function exportPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+
+  doc.text("Loan Report", 14, 15);
+
+  const tableData = loans.map((loan) => [
+    loan.name,
+    loan.amount,
+    loan.total,
+    loan.daily,
+    loan.paid,
+    (loan.total - loan.paid).toFixed(2),
+    loan.payments.map(p => `${p.date}: ${p.amount}`).join('\n')
+  ]);
+
+  doc.autoTable({
+    head: [["Name", "Loan", "Total", "Daily", "Paid", "Remaining", "Payments"]],
+    body: tableData,
+    startY: 20,
+    styles: { fontSize: 8 },
+    theme: 'grid'
+  });
+
+  const totalCollected = getTotalCollected();
+  const opening = parseFloat(document.getElementById("openingBalance").value) || 0;
+  const totalMoneyOut = moneyOutEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  const loansToday = loans.filter(loan => loan.givenDate === new Date().toLocaleDateString());
+  const loansGivenToday = loansToday.reduce((sum, l) => sum + l.amount, 0);
+  const closingBalance = opening + totalCollected - totalMoneyOut - loansGivenToday;
+
+  // Summary Section
+  doc.text("Daily Summary", 14, doc.lastAutoTable.finalY + 10);
+  doc.autoTable({
+    body: [
+      ["Opening Balance", `KES ${opening}`],
+      ["Total Collected", `KES ${totalCollected}`],
+      ["Loans Given Today", `KES ${loansGivenToday}`],
+      ["Money Out Total", `KES ${totalMoneyOut}`],
+      ["Closing Balance", `KES ${closingBalance}`],
+    ],
+    startY: doc.lastAutoTable.finalY + 15,
+    theme: 'plain',
+    styles: { fontSize: 10 }
+  });
+
+  // Detailed Money Out
+  doc.text("Money Out (Detailed)", 14, doc.autoTable.previous.finalY + 10);
+  if (moneyOutEntries.length > 0) {
+    doc.autoTable({
+      head: [["Type", "Amount", "Note"]],
+      body: moneyOutEntries.map(entry => [entry.type, entry.amount, entry.note]),
+      startY: doc.autoTable.previous.finalY + 15,
+      styles: { fontSize: 8 },
+      theme: 'grid'
+    });
+  }
+
+  // Loans Given Today
+  doc.text("Loans Given Today (Detailed)", 14, doc.autoTable.previous.finalY + 10);
+  if (loansToday.length > 0) {
+    doc.autoTable({
+      head: [["Name", "Amount", "Date"]],
+      body: loansToday.map(loan => [loan.name, loan.amount, loan.givenDate]),
+      startY: doc.autoTable.previous.finalY + 15,
+      styles: { fontSize: 8 },
+      theme: 'grid'
+    });
+  }
+
+  doc.save("loan_report.pdf");
+}
+
+
+// csv export
+function exportCSV() {
+  let csv = "Name,Loan,Total with Interest,Daily Payment,Paid,Remaining,Payments\n";
+  loans.forEach(loan => {
+    const payments = loan.payments.map(p => `${p.date}: ${p.amount}`).join(" | ");
+    csv += `${loan.name},${loan.amount},${loan.total},${loan.daily},${loan.paid},${(loan.total - loan.paid).toFixed(2)},"${payments}"\n`;
+  });
+
+  const totalCollected = getTotalCollected();
+  const opening = parseFloat(document.getElementById("openingBalance").value) || 0;
+  const totalMoneyOut = moneyOutEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  const loansToday = loans.filter(loan => loan.givenDate === new Date().toLocaleDateString());
+  const loansGivenToday = loansToday.reduce((sum, l) => sum + l.amount, 0);
+  const closingBalance = opening + totalCollected - totalMoneyOut - loansGivenToday;
+
+  csv += "\n--- Summary ---\n";
+  csv += `Opening Balance,${opening}\n`;
+  csv += `Total Collected,${totalCollected}\n`;
+  csv += `Money Out Total,${totalMoneyOut}\n`;
+  csv += `Loans Given Today Total,${loansGivenToday}\n`;
+  csv += `Closing Balance,${closingBalance}\n`;
+
+  csv += "\n--- Money Out (Detailed) ---\nType,Amount,Note\n";
+  moneyOutEntries.forEach(entry => {
+    csv += `${entry.type},${entry.amount},"${entry.note}"\n`;
+  });
+
+  csv += "\n--- Loans Given Today (Detailed) ---\nName,Amount,Date\n";
+  loansToday.forEach(loan => {
+    csv += `${loan.name},${loan.amount},${loan.givenDate}\n`;
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "loan_report.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+
+
+let moneyOutEntries = [];
+
+function addMoneyOut() {
+  const type = document.getElementById("moneyOutType").value;
+  const amount = parseFloat(document.getElementById("moneyOutAmount").value);
+  const note = document.getElementById("moneyOutNote").value.trim();
+
+  if (isNaN(amount) || amount <= 0) {
+    alert("Please enter a valid amount.");
+    return;
+  }
+
+  moneyOutEntries.push({ type, amount, note });
+
+  document.getElementById("moneyOutAmount").value = "";
+  document.getElementById("moneyOutNote").value = "";
+
+  updateMoneyOutList();
+  updateSummary();
+}
+
+function updateMoneyOutList() {
+  const list = document.getElementById("moneyOutList");
+  list.innerHTML = "";
+  moneyOutEntries.forEach((entry, index) => {
+    const item = document.createElement("div");
+    item.textContent = `${entry.type}: KES ${entry.amount} - "${entry.note}"`;
+    list.appendChild(item);
+  });
+}
+
+function updateSummary() {
+  const openingBalance = parseFloat(document.getElementById("openingBalance").value) || 0;
+  const totalMoneyOut = moneyOutEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  const totalCollected = getTotalCollected(); // you'll define this based on actual payments
+
+  const closingBalance = opening + totalCollected - totalMoneyOut;
+
+  document.getElementById("summaryBox").innerHTML = `
+    <p><strong>Opening Balance:</strong> KES ${opening}</p>
+    <p><strong>Total Collected:</strong> KES ${totalCollected}</p>
+    <p><strong>Total Money Out:</strong> KES ${totalMoneyOut}</p>
+    <p><strong>Closing Balance:</strong> KES ${closingBalance}</p>
+  `;
+}
+
+// Dummy implementation — replace with real logic from your app
+function getTotalCollected() {
+  return loans.reduce((total, loan) => {
+    return total + (loan.payments ? loan.payments.reduce((sum, p) => sum + p.amount, 0) : 0);
+  }, 0);
+}
+document.getElementById('openingBalance').addEventListener('input', () => {
+  openingBalance = parseFloat(document.getElementById('openingBalance').value) || 0;
+  updateUI();  // Refresh summary with new balance
+});
+
+
+loadLoans();
+
+
+
+</script>
+
+</body>
+</html>
